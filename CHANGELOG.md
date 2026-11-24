@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Add an optional Windows stdio server with a read-only `list_account_print_history` tool. It queries the account signed into Bambu Studio through the installed Bambu networking plug-in and returns a page of past print tasks.
+
 ## [1.1.102] – 2026-11-23
 
 ### Fixed

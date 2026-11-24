@@ -46,6 +46,20 @@ npm link
 
 `npm link` makes the `bambu-printer-mcp` binary available globally without publishing to npm.
 
+### Optional Windows account print history
+
+The separate `bambu-print-history` stdio server exposes `list_account_print_history`. It reads past jobs from the account signed into the local Bambu Studio installation, using the installed 02.09-series networking plug-in. The helper runs with a temporary copy of Studio's saved network profile and returns a page of job summaries. `offset` defaults to `0` and `limit` defaults to `20` (maximum `50`).
+
+From the source checkout, build the helper with 64-bit MSVC and CMake, then build the TypeScript server:
+
+```powershell
+cmake -S native -B temp/print-history -G 'Visual Studio 17 2022' -A x64
+cmake --build temp/print-history --config Release
+npm run build
+```
+
+Configure the MCP client to run `node` with the absolute path to `dist/print-history-server.js`. Set `BAMBU_HISTORY_CERT_DIR` to the absolute path to Bambu Studio's `resources/cert` directory. The Studio profile defaults to `%APPDATA%\BambuStudio` and can be set with `BAMBU_HISTORY_STUDIO_PROFILE`.
+
 ---
 
 ## Configuration
