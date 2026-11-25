@@ -28,6 +28,7 @@ export declare class CadEngine {
      * a wait plus a ~17 s re-check cannot overrun the status deadline. */
     busyRetryMs: number;
     constructor(options: CadOptions);
+    private python;
     status(): Promise<CadStatus>;
     failure(error: unknown, tool: string): Promise<{
         storage: CadStorage;

@@ -1,10 +1,17 @@
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#else
 #include <dlfcn.h>
+#endif
 
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iostream>
@@ -13,8 +20,7 @@
 #include <stdexcept>
 #include <sstream>
 #include <string>
-#include <sys/stat.h>
-#if !defined(__APPLE__)
+#if !defined(__APPLE__) && !defined(_WIN32)
 #include <pwd.h>
 #include <unistd.h>
 #endif
@@ -126,10 +132,28 @@ void outputLine(const std::string &line) {
 }
 
 std::string envOr(const char *name, const std::string &fallback = {}) {
+#if defined(_WIN32)
+    const std::wstring key(name, name + std::strlen(name));
+    const DWORD capacity = GetEnvironmentVariableW(key.c_str(), nullptr, 0);
+    if (capacity == 0) return fallback;
+    std::wstring value(capacity, L'\0');
+    const DWORD length = GetEnvironmentVariableW(key.c_str(), value.data(), capacity);
+    if (length == 0 || length >= capacity) return fallback;
+    value.resize(length);
+    // Bambu's networking API takes UTF-8 even when Windows paths are UTF-16.
+    return std::filesystem::path(value).u8string();
+#else
     const char *value = std::getenv(name);
     return value && *value ? std::string(value) : fallback;
+#endif
 }
 
+bool isRegularFile(const std::string &file) {
+    std::error_code error;
+    return std::filesystem::is_regular_file(std::filesystem::u8path(file), error);
+}
+
+#if !defined(_WIN32)
 std::string homeDir() {
 #if defined(__APPLE__)
     return envOr("HOME", "/Users/Shared");
@@ -141,13 +165,9 @@ std::string homeDir() {
     return entry && entry->pw_dir ? std::string(entry->pw_dir) : std::string("/");
 #endif
 }
+#endif
 
 #if defined(__APPLE__)
-bool isRegularFile(const std::string &path) {
-    struct stat fileStat {};
-    return stat(path.c_str(), &fileStat) == 0 && S_ISREG(fileStat.st_mode);
-}
-
 std::string defaultPluginPath() {
     // Bambu Connect ships the current X2D networking plug-in. Prefer it when
     // present; older Bambu Studio installations remain a compatible fallback.
@@ -163,6 +183,26 @@ std::string defaultConfigDir() {
 
 std::string defaultCertDir() {
     return envOr("BAMBU_NATIVE_CERT_DIR", "/Applications/BambuStudio.app/Contents/Resources/cert");
+}
+#elif defined(_WIN32)
+std::string defaultPluginPath() {
+    return envOr("APPDATA") + "/BambuStudio/plugins/bambu_networking.dll";
+}
+
+std::string configuredWindowsPath(const char *name) {
+    auto value = envOr(name);
+    if (!std::filesystem::u8path(value).is_absolute()) {
+        throw std::runtime_error(std::string(name) + " must be an absolute Windows path");
+    }
+    return value;
+}
+
+std::string defaultConfigDir() {
+    return configuredWindowsPath("BAMBU_NATIVE_CONFIG_DIR");
+}
+
+std::string defaultCertDir() {
+    return configuredWindowsPath("BAMBU_NATIVE_CERT_DIR");
 }
 #else
 // Linux has no application bundle to borrow from. The setup script installs a
@@ -190,19 +230,40 @@ std::string defaultCertDir() {
 }
 #endif
 
-void *symbol(void *handle, const char *name) {
-    return dlsym(handle, name);
+void *openLibrary(const std::string &file) {
+#if defined(_WIN32)
+    const auto absolute = std::filesystem::u8path(file);
+    if (!absolute.is_absolute()) throw std::runtime_error("Native DLL path must be absolute");
+    const auto handle = LoadLibraryExW(absolute.c_str(), nullptr,
+        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    if (!handle) throw std::runtime_error("Could not load " + file + " (Windows error " + std::to_string(GetLastError()) + ")");
+    return handle;
+#else
+    void *handle = dlopen(file.c_str(), RTLD_NOW | RTLD_LOCAL);
+    if (!handle) {
+        const char *error = dlerror();
+        throw std::runtime_error("Could not load " + file + (error ? std::string(" (") + error + ")" : ""));
+    }
+    return handle;
+#endif
+}
+
+void closeLibrary(void *handle) {
+#if defined(_WIN32)
+    FreeLibrary(static_cast<HMODULE>(handle));
+#else
+    dlclose(handle);
+#endif
 }
 
 template <typename T>
 T requiredSymbol(void *handle, const char *name) {
-    dlerror();
-    void *raw = symbol(handle, name);
-    const char *error = dlerror();
-    if (!raw || error) {
-        throw std::runtime_error(std::string("missing native symbol ") + name +
-                                 (error ? std::string(": ") + error : std::string()));
-    }
+#if defined(_WIN32)
+    const auto raw = GetProcAddress(static_cast<HMODULE>(handle), name);
+#else
+    auto *raw = dlsym(handle, name);
+#endif
+    if (!raw) throw std::runtime_error(std::string("missing native symbol ") + name);
     return reinterpret_cast<T>(raw);
 }
 
@@ -232,21 +293,19 @@ struct NativeApi {
     StartSendGcodeToSdcardFn startSendGcodeToSdcard = nullptr;
 
     ~NativeApi() {
-        if (handle) dlclose(handle);
+        if (handle) closeLibrary(handle);
     }
 };
 
-NativeApi loadApi() {
+void loadApi(NativeApi &api) {
     const std::string plugin = envOr("BAMBU_NATIVE_PLUGIN", defaultPluginPath());
-    void *handle = dlopen(plugin.c_str(), RTLD_NOW | RTLD_LOCAL);
-    if (!handle) {
-        const char *error = dlerror();
-        throw std::runtime_error("could not load Bambu networking plug-in: " + plugin +
-                                 (error ? std::string(" (") + error + ")" : std::string()));
+    void *handle = api.handle = openLibrary(plugin);
+#if defined(_WIN32)
+    // Match the PrintParams layout in Bambu Studio v02.09.02.62.
+    if (requiredSymbol<std::string (*)()>(handle, "bambu_network_get_version")() != "02.09.02.50") {
+        throw std::runtime_error("Windows native transport requires Bambu networking plug-in 02.09.02.50");
     }
-
-    NativeApi api;
-    api.handle = handle;
+#endif
     api.createAgent = requiredSymbol<CreateAgentFn>(handle, "bambu_network_create_agent");
     api.destroyAgent = requiredSymbol<DestroyAgentFn>(handle, "bambu_network_destroy_agent");
     api.initLog = requiredSymbol<InitLogFn>(handle, "bambu_network_init_log");
@@ -269,7 +328,6 @@ NativeApi loadApi() {
     api.ftTunnelCreate = requiredSymbol<FtTunnelCreateFn>(handle, "ft_tunnel_create");
     api.ftTunnelSyncConnect = requiredSymbol<FtTunnelSyncConnectFn>(handle, "ft_tunnel_sync_connect");
     api.ftTunnelRelease = requiredSymbol<FtTunnelReleaseFn>(handle, "ft_tunnel_release");
-    return api;
 }
 
 std::string localUrl(const std::string &host, const std::string &token) {
@@ -525,8 +583,7 @@ void runOperation(NativeApi &api, NativeOperation operation) {
                                  (commandOnly ? " requires host, access code, serial, and command JSON" :
                                                 " requires host, access code, serial, and file"));
     }
-    struct stat fileStat {};
-    if (!commandOnly && (stat(file.c_str(), &fileStat) != 0 || !S_ISREG(fileStat.st_mode))) {
+    if (!commandOnly && !isRegularFile(file)) {
         throw std::runtime_error(std::string("native ") + (uploadOnly ? "upload" : "print") +
                                  " file is not readable: " + file);
     }
@@ -790,20 +847,18 @@ void runOperation(NativeApi &api, NativeOperation operation) {
 } // namespace
 
 // Load the plug-in and resolve every required symbol without any network
-// access. On Linux also load the file-tunnel library the plug-in opens from its
+// access. On Linux and Windows also load the file-tunnel library from the plug-in's
 // own directory, so missing system libraries surface at setup time.
 void runPluginCheck(const NativeApi &) {
 #if !defined(__APPLE__)
     const std::string plugin = envOr("BAMBU_NATIVE_PLUGIN", defaultPluginPath());
-    // Resolve beside the plug-in, never through the system library path.
-    const std::string::size_type slash = plugin.find_last_of('/');
-    const std::string source = (slash == std::string::npos ? std::string("./") : plugin.substr(0, slash + 1)) + "libBambuSource.so";
-    void *handle = dlopen(source.c_str(), RTLD_NOW | RTLD_LOCAL);
-    if (!handle) {
-        const char *error = dlerror();
-        throw std::runtime_error("could not load Bambu tunnel library: " + source + (error ? std::string(": ") + error : std::string()));
-    }
-    dlclose(handle);
+#if defined(_WIN32)
+    constexpr auto sourceName = "BambuSource.dll";
+#else
+    constexpr auto sourceName = "libBambuSource.so";
+#endif
+    const auto source = (std::filesystem::absolute(std::filesystem::u8path(plugin)).parent_path() / sourceName).u8string();
+    closeLibrary(openLibrary(source));
 #endif
     outputLine("plugin=ok");
 }
@@ -821,7 +876,8 @@ int main(int argc, char **argv) {
             std::cerr << "usage: bambu-native-print --check-plugin|--probe|--probe-mqtt|--print-authorized|--upload|--command|--command-authorized" << std::endl;
             return 2;
         }
-        NativeApi api = loadApi();
+        NativeApi api;
+        loadApi(api);
         if (pluginCheck) runPluginCheck(api);
         if (probe) runProbe(api);
         if (mqttProbe) runMqttProbe(api);

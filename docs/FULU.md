@@ -43,7 +43,7 @@ BAMBU_MODEL=p1s
 
 For an external spool, follow the [no-AMS guidance](../README.md#printing-without-ams). H2 jobs with declared filaments still need the positional mapping described in [`print_3mf`](../README.md#print_3mf). Inspect printer status and HMS errors after submission; command acceptance and actual printing are different checks.
 
-**X2D:** status and slicing with its own preset are supported. On macOS and x86-64 Linux, `print_3mf` can use the optional native helper and installed compatible networking plug-in, with shared model/file/state/preflight checks. Windows native printing and legacy FTPS/remote-file starts remain unsupported. A successful FULU slice or bridge initialization alone does not demonstrate physical printing; do not substitute `h2d`. See the [slicing and transport guide](./SLICING.md).
+**X2D:** status and slicing with its own preset are supported. `print_3mf` can use the independent native helper and compatible networking plug-in on macOS, x86-64 Linux, and [x86-64 Windows](../README.md#x2d-native-transport-windows), with shared model, file, and state checks. Legacy FTPS and remote-file starts remain unsupported. See the [slicing and transport guide](./SLICING.md).
 
 <a id="optional-fulu-cli-slicing"></a>
 
@@ -280,7 +280,7 @@ These failures come from upstream software, not from this server. The server wor
 | A control returns the printer's `err_code` 84033546 (0x0502400A) | Command verification failed. On P1S 01.10, a valid signature with a request ID outside Studio's string `20000`–`29999` window produces this error. Use the updated MCP counter; this code alone does not establish that Developer Mode is required. |
 | Non-zero result or `send msg failed` | Inspect the redacted runtime error and printer diagnostics; do not blindly repeat a possible print submission. |
 | FULU/Orca CLI slicing requested | Use 1.1.11+ with the matching installed profile tree and exact model/nozzle; see the CLI checks above. Use GUI export if preparation or slicing fails. |
-| X2D native transport unavailable | Native printing requires macOS or x86-64 Linux, the optional built helper, and a compatible installed networking plug-in. On Linux, run `bambu-printer-mcp-native-setup` and check it with `--verify`. Legacy FTPS/remote-file starts remain unsupported; keep the X2D model and preset. |
+| X2D native transport unavailable | Build or install the helper and compatible networking plug-in for [macOS](../README.md#x2d-native-transport-macos), [x86-64 Linux](../README.md#x2d-native-transport-linux), or [x86-64 Windows](../README.md#x2d-native-transport-windows). On Linux, run `bambu-printer-mcp-native-setup` and check it with `--verify`. Keep the X2D model and preset. |
 
 The repository's automated tests exercise bridge framing, initialization, method/parameter handling and failure responses. They use a stand-in host that reproduces the real host's exit codes, certificate needs and `-4030` behaviour. An opt-in test runs the real host and plug-in when `FULU_HOST_DIR` and `FULU_PLUGIN_DIR` point at them on x86-64 Linux. With `FULU_TEST_PRINTER_HOST`, `FULU_TEST_PRINTER_SERIAL` and `FULU_TEST_PRINTER_ACCESS_CODE` it also opens and closes a real LAN session. It never prints.
 

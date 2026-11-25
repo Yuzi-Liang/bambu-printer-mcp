@@ -16,11 +16,14 @@ import {
   type CadStorage,
 } from "./cad/storage.js";
 import { cadSandbox, defaultCadSystem, type CadSystem } from "./cad/process.js";
+import { prepareWindowsCad, runWindowsCad, windowsCadHelper, windowsCadRuntime } from "./cad/windows.js";
 
 const ASSETS = fileURLToPath(new URL("../src/cad/", import.meta.url));
 const BUILD123D = "0.13.0";
 const PACKAGE_NAME = createRequire(import.meta.url)("../package.json")
   .name as string;
+const supportsCad = (platform: NodeJS.Platform) => platform === "darwin" || platform === "linux" ||
+  (platform === "win32" && process.arch === "x64");
 export type CadArguments = Record<string, unknown>;
 export interface CadOptions {
   dataDir?: string;
@@ -55,15 +58,21 @@ export class CadEngine {
         path.join(
           process.platform === "darwin"
             ? path.join(os.homedir(), "Library", "Application Support")
-            : (process.env.XDG_DATA_HOME ??
+            : process.platform === "win32"
+              ? (process.env.LOCALAPPDATA ?? path.join(os.homedir(), "AppData", "Local"))
+              : (process.env.XDG_DATA_HOME ??
                 path.join(os.homedir(), ".local", "share")),
           PACKAGE_NAME,
           "cad",
         ),
     );
   }
+  private python(): string {
+    const executable = this.system.platform === "win32" ? ["Scripts", "python.exe"] : ["bin", "python"];
+    return path.join(this.dataDir, "runtime", ...executable);
+  }
   async status(): Promise<CadStatus> {
-    const python = path.join(this.dataDir, "runtime", "bin", "python");
+    const python = this.python();
     const configured = await fs.stat(python).then(
       (s) => s.isFile(),
       () => false,
@@ -132,9 +141,9 @@ export class CadEngine {
     });
     for (const root of this.options.outputRoots) {
       const real = await fs.realpath(path.resolve(root)).catch(() => undefined);
+      const relative = real && path.relative(real, dir);
       if (
-        real &&
-        (dir === real || dir.startsWith(real + path.sep)) &&
+        relative !== undefined && relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative) &&
         (await fs.stat(dir)).isDirectory()
       )
         return dir;
@@ -146,6 +155,14 @@ export class CadEngine {
   private environment(home: string): NodeJS.ProcessEnv {
     return {
       PATH: process.env.PATH ?? "/usr/bin:/bin",
+      ...(this.system.platform === "win32" && {
+        SystemRoot: process.env.SystemRoot ?? process.env.WINDIR ?? "C:\\Windows",
+        WINDIR: process.env.WINDIR ?? process.env.SystemRoot ?? "C:\\Windows",
+        // CreateProcess needs this to locate the profile for the new AppContainer.
+        LOCALAPPDATA: process.env.LOCALAPPDATA ?? path.join(os.homedir(), "AppData", "Local"),
+        USERPROFILE: home,
+        PYTHONUTF8: "1",
+      }),
       HOME: home,
       TMPDIR: path.join(home, "tmp"),
       TMP: path.join(home, "tmp"),
@@ -178,7 +195,11 @@ export class CadEngine {
     signal?: AbortSignal,
     inputDirectories: string[] = [],
   ): Promise<{ stdout: string; stderr?: string }> {
-    const python = path.join(this.dataDir, "runtime", "bin", "python");
+    const env = this.environment(job);
+    if (this.system.platform === "win32") {
+      return runWindowsCad(this.system, this.dataDir, mode, request, job, readonly, { env, timeoutMs, signal });
+    }
+    const python = this.python();
     const sandbox = await cadSandbox(this.system.platform, {
       data: this.dataDir,
       job,
@@ -200,7 +221,7 @@ export class CadEngine {
         request,
       ],
       {
-        env: this.environment(job),
+        env,
         cwd: job,
         timeoutMs,
         signal,
@@ -216,10 +237,10 @@ export class CadEngine {
       throw new Error("install must be a boolean.");
     if (args.install !== true)
       return {
-        supported: ["darwin", "linux"].includes(this.system.platform),
+        supported: supportsCad(this.system.platform),
         ...(await this.ensureReady(signal)),
       };
-    if (!["darwin", "linux"].includes(this.system.platform))
+    if (!supportsCad(this.system.platform))
       throw new CadRefusal(
         "cad-confinement-unavailable",
         `CAD confinement is unavailable on ${this.system.platform}.`,
@@ -227,11 +248,14 @@ export class CadEngine {
     return this.exclusive(
       async () => {
         signal?.throwIfAborted();
+        const windows = this.system.platform === "win32";
+        if (windows) await windowsCadHelper();
         const env = this.environment(this.dataDir);
         await this.requireSupportedStorage(env, signal);
         await fs.mkdir(env.TMPDIR!, { recursive: true });
         await fs.unlink(path.join(this.dataDir, "ready.json")).catch(() => {});
-        const python = path.join(this.dataDir, "runtime", "bin", "python");
+        const python = this.python();
+        const uv = process.env.CAD_UV_PATH?.trim() || "uv";
         const opts = { env, cwd: this.dataDir, signal, timeoutMs: 600_000 };
         try {
           if (
@@ -241,7 +265,7 @@ export class CadEngine {
             ))
           )
             await this.system.run(
-              "uv",
+              uv,
               [
                 "venv",
                 "--managed-python",
@@ -253,7 +277,7 @@ export class CadEngine {
               opts,
             );
           await this.system.run(
-            "uv",
+            uv,
             [
               "pip",
               "sync",
@@ -261,6 +285,7 @@ export class CadEngine {
               python,
               "--only-binary",
               ":all:",
+              ...(windows ? ["--link-mode", "copy"] : []),
               "--no-config",
               path.join(ASSETS, "requirements.lock"),
             ],
@@ -301,13 +326,14 @@ export class CadEngine {
     // Setup proves the fresh install's imports outside confinement first; a re-check of an unchanged runtime relies on
     // the confined round trip, which imports the same libraries.
     if (measured === undefined) {
-      const python = path.join(this.dataDir, "runtime", "bin", "python");
+      const python = this.python();
       await this.system.run(
         python,
         ["-I", "-B", path.join(ASSETS, "worker.py"), "imports"],
         { ...opts, timeoutMs: 120_000 },
       );
     }
+    if (this.system.platform === "win32") await prepareWindowsCad(this.system, this.dataDir, ASSETS, opts);
     const job = await fs.mkdtemp(path.join(this.dataDir, "verify-"));
     const request = path.join(job, "request.json");
     await fs.writeFile(
@@ -464,13 +490,17 @@ export class CadEngine {
     const runtime = path.join(this.dataDir, "runtime");
     const cfg = await fs.readFile(path.join(runtime, "pyvenv.cfg"), "utf8").catch(() => "");
     const field = (name: string) => cfg.match(new RegExp(`^${name}\\s*=\\s*(.+)$`, "m"))?.[1]?.trim() ?? "";
-    const interpreter = `${field("version_info") || field("version")} ${await fs.realpath(path.join(runtime, "bin", "python")).catch(() => "")}`;
+    const windows = this.system.platform === "win32";
+    const base = windows ? await windowsCadRuntime(this.dataDir) : undefined;
+    const interpreterFile = await fs.realpath(base?.python ?? this.python()).catch(() => "");
+    const interpreter = `${field("version_info") || field("version")} ${interpreterFile}`;
     const norm = (name: string) => name.toLowerCase().replace(/[-_.]+/g, "-");
     const installed = new Map<string, string>();
     const lib = path.join(runtime, "lib");
-    for (const dir of await fs.readdir(lib).catch(() => [] as string[])) {
-      if (!/^python3\.\d+$/.test(dir)) continue;
-      for (const entry of await fs.readdir(path.join(lib, dir, "site-packages")).catch(() => [] as string[])) {
+    const libraries = base ? [base.site] : (await fs.readdir(lib).catch(() => [] as string[]))
+      .filter(dir => /^python3\.\d+$/.test(dir)).map(dir => path.join(lib, dir, "site-packages"));
+    for (const directory of libraries) {
+      for (const entry of await fs.readdir(directory).catch(() => [] as string[])) {
         const m = entry.match(/^(.+)-([^-]+)\.dist-info$/);
         if (m) installed.set(norm(m[1]), m[2]);
       }
@@ -514,6 +544,11 @@ export class CadEngine {
     ])
       hash.update(await fs.readFile(new URL(`./cad/${file}`, import.meta.url)));
     hash.update(await fs.readFile(new URL("./cad-engine.js", import.meta.url)));
+    if (this.system.platform === "win32") {
+      hash.update(await fs.readFile(path.join(ASSETS, "windows.ts")));
+      hash.update(await fs.readFile(new URL("./cad/windows.js", import.meta.url)));
+      hash.update(await fs.readFile(await windowsCadHelper()));
+    }
     return hash.digest("hex");
   }
   private async requireSupportedStorage(

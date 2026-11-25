@@ -288,7 +288,7 @@ test("X2D native control accepts Studio device commands but rejects unrelated de
   );
 });
 
-test("X2D public task and AMS tools dispatch through the native helper, including AMS-HT id 128", { skip: !isBambuNativePlatform() }, async (t) => {
+test("X2D public task and AMS tools dispatch through the native helper, including AMS-HT id 128", { skip: process.platform === "win32" || !isBambuNativePlatform() }, async (t) => {
   const tempDir = trackedMkdtempSync(path.join(os.tmpdir(), "bambu-native-control-"));
   const helperPath = path.join(tempDir, "fake-native-helper.mjs");
   fs.writeFileSync(
@@ -396,7 +396,7 @@ test("X2D public task and AMS tools dispatch through the native helper, includin
   assert.equal(rfidMessage.slot_id, 0);
 });
 
-test("native upload forwards helper progress before returning the final result", { skip: !isBambuNativePlatform() }, async (t) => {
+test("native upload forwards helper progress before returning the final result", { skip: process.platform === "win32" || !isBambuNativePlatform() }, async (t) => {
   const tempDir = trackedMkdtempSync(path.join(os.tmpdir(), "bambu-native-progress-"));
   const helperPath = path.join(tempDir, "fake-native-helper.mjs");
   fs.writeFileSync(

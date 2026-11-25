@@ -8,7 +8,9 @@ function firstExistingExecutable(candidates) {
     return candidates.find((candidate) => {
         try {
             const stat = fs.statSync(candidate);
-            return stat.isFile() && (stat.mode & 0o111) !== 0;
+            return stat.isFile() && (process.platform === "win32"
+                ? path.isAbsolute(candidate) && path.extname(candidate).toLowerCase() === ".exe"
+                : (stat.mode & 0o111) !== 0);
         }
         catch {
             return false;
@@ -17,10 +19,10 @@ function firstExistingExecutable(candidates) {
 }
 /**
  * Hosts for which the native helper and Bambu's networking plug-in exist.
- * Bambu publishes its Linux plug-in for x86-64 only.
+ * The checked Windows and Linux builds use x86-64 binaries.
  */
 export function isBambuNativePlatform(platform = process.platform, arch = process.arch) {
-    return platform === "darwin" || (platform === "linux" && arch === "x64");
+    return platform === "darwin" || ((platform === "linux" || platform === "win32") && arch === "x64");
 }
 /**
  * Private directory used by `bambu-printer-mcp-native-setup` on Linux. Mirrors
@@ -50,6 +52,13 @@ export const BAMBU_NATIVE_PINNED_PLUGIN = Object.freeze({
         "libBambuSource.so": "4e05f16fa02740fd12f0040b9efc3e70d43446c7a1a877c6a3926ef0758ca7db",
     }),
 });
+// Windows plug-in paired with Bambu Studio v02.09.02.62. PrintParams is
+// passed by value, so the server refuses a different DLL pair after an update.
+const WINDOWS_NATIVE_PLUGIN_VERSION = "02.09.02.50";
+const WINDOWS_NATIVE_LIBRARIES = {
+    "bambu_networking.dll": "50a8f989084efb7efc01b9e36fef3aa5c406a0dac1e3f05fa0eb2b290837418a",
+    "BambuSource.dll": "9a99fae64bf0fd0b707d8a98fc2910e78a314c3a8ea085b10ae14f741bb5f7f8",
+};
 /** Layout shared by the Linux setup script, the server and the helper's environment. */
 export function bambuNativeManagedPaths(env = process.env) {
     const home = bambuNativeHomeDir(env);
@@ -123,17 +132,44 @@ function isRegularFile(file) {
         return false;
     }
 }
+function resolveWindowsNativeInstall(helper) {
+    const env = process.env;
+    const plugin = env.BAMBU_NATIVE_PLUGIN?.trim() || path.join(env.APPDATA || "", "BambuStudio", "plugins", "bambu_networking.dll");
+    const studio = env.SLICER_PATH?.trim() || path.join(env.ProgramFiles || "", "Bambu Studio", "bambu-studio.exe");
+    const certDir = env.BAMBU_NATIVE_CERT_DIR?.trim() || path.join(path.dirname(studio), "resources", "cert");
+    const configDir = env.BAMBU_NATIVE_CONFIG_DIR?.trim() || path.join(env.LOCALAPPDATA || os.homedir(), "bambu-printer-mcp", "bambu-native");
+    if (![plugin, certDir, configDir].every(value => path.isAbsolute(value))) {
+        throw new Error("Windows native printing requires absolute plug-in, certificate and configuration paths.");
+    }
+    for (const [name, expected] of Object.entries(WINDOWS_NATIVE_LIBRARIES)) {
+        const file = name === "bambu_networking.dll" ? plugin : path.join(path.dirname(plugin), name);
+        if (!isRegularFile(file))
+            throw new Error(`Windows native printing requires ${name} from Bambu Studio.`);
+        if (!libraryMatches(file, expected)) {
+            throw new Error(`${name} does not match the verified Windows Bambu plug-in ${WINDOWS_NATIVE_PLUGIN_VERSION}.`);
+        }
+    }
+    for (const certificate of BAMBU_NATIVE_CERTIFICATES) {
+        if (!isRegularFile(path.join(certDir, certificate))) {
+            throw new Error(`Windows native printing requires ${certificate}. Set BAMBU_NATIVE_CERT_DIR to Bambu Studio's resources/cert directory.`);
+        }
+    }
+    return { helper, env: { BAMBU_NATIVE_PLUGIN: plugin, BAMBU_NATIVE_CERT_DIR: certDir,
+            BAMBU_NATIVE_CERT_FILE: BAMBU_NATIVE_CERTIFICATES[0], BAMBU_NATIVE_CONFIG_DIR: configDir } };
+}
 /**
- * Resolve a complete native installation. On Linux the helper, the pinned
+ * Resolve a complete native installation. On Linux and Windows the helper, the pinned
  * plug-in and both certificates must be present before any native route is
  * chosen, and their resolved paths are handed to the helper so server and
  * helper can never disagree about which plug-in is loaded.
  */
 function resolveNativeInstall() {
     if (!isBambuNativePlatform()) {
-        throw new Error("Bambu native transport requires macOS or x86-64 Linux and Bambu's networking plug-in.");
+        throw new Error("Bambu native transport requires macOS, x86-64 Linux, or x86-64 Windows and Bambu's networking plug-in.");
     }
     const helper = resolveNativeHelper();
+    if (process.platform === "win32")
+        return resolveWindowsNativeInstall(helper);
     if (process.platform !== "linux")
         return { helper, env: {} };
     const managed = bambuNativeManagedPaths();
@@ -185,12 +221,15 @@ function resolveNativeInstall() {
         env: { BAMBU_NATIVE_PLUGIN: plugin, BAMBU_NATIVE_CERT_DIR: certDir, BAMBU_NATIVE_CONFIG_DIR: configDir },
     };
 }
-export function assertBambuNativeAvailable() {
+export function assertBambuNativeAvailable(model) {
+    if (process.platform === "win32" && model !== undefined && model !== "x2d") {
+        throw new Error("The Windows native transport supports X2D only.");
+    }
     resolveNativeInstall();
 }
 /**
  * True when X2D controls should use the native route. macOS keeps its
- * unconditional routing. Linux opts in only with a complete installation, so
+ * unconditional routing. Linux and Windows opt in only with a complete installation, so
  * stop, pause and heater-off keep their MQTT route otherwise.
  */
 export function bambuNativeControlsAvailable() {
@@ -200,8 +239,6 @@ export function bambuNativeControlsAvailable() {
 export function bambuNativeUnavailableReason() {
     if (process.platform === "darwin")
         return undefined;
-    if (process.platform !== "linux")
-        return "Native X2D controls require macOS or x86-64 Linux.";
     try {
         resolveNativeInstall();
         return undefined;
@@ -216,10 +253,13 @@ function resolveNativeHelper() {
     // this package; a package-local build could be stale after an update.
     const candidates = [
         configured,
-        process.platform === "linux" ? bambuNativeManagedPaths().helper : path.resolve(PACKAGE_ROOT, "native/bambu-native-print"),
+        process.platform === "linux" ? bambuNativeManagedPaths().helper : path.resolve(PACKAGE_ROOT, process.platform === "win32" ? "temp/windows-native/Release/bambu-native-print.exe" : "native/bambu-native-print"),
     ].filter((value) => Boolean(value));
     const helper = firstExistingExecutable(candidates);
     if (!helper) {
+        if (process.platform === "win32") {
+            throw new Error("Windows Bambu native helper is not installed. Build its CMake Release target or set BAMBU_NATIVE_HELPER to its absolute .exe path.");
+        }
         throw new Error(process.platform === "linux"
             ? `Bambu native helper is not installed. ${linuxSetupHint()} Alternatively set BAMBU_NATIVE_HELPER.`
             : "Bambu native helper is not installed. Build native/bambu-native-print with clang++ or set BAMBU_NATIVE_HELPER.");
@@ -264,10 +304,13 @@ function runNativeHelper(mode, env, timeoutMs, onUpdate, execution = {}) {
         throw new Error("Native dispatch requires a beforeDispatch fresh-state check.");
     }
     const install = resolveNativeInstall();
+    if (process.platform === "win32")
+        fs.mkdirSync(install.env.BAMBU_NATIVE_CONFIG_DIR, { recursive: true });
     return new Promise((resolve, reject) => {
         const child = spawn(install.helper, [mode], {
             env: { ...env, ...install.env },
             stdio: ["pipe", "pipe", "pipe"],
+            windowsHide: true,
         });
         let markClosed;
         const closed = new Promise(resolve => { markClosed = resolve; });

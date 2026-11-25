@@ -176,7 +176,7 @@ export function ftpsRefusalHint(error: unknown, model: string | undefined): stri
 export function assertDirectPrintSupported(model: string | undefined, serial?: string): void {
   if (model?.trim().toLowerCase() === "x2d" || serial?.trim().toUpperCase().startsWith("20P")) {
     throw new Error(
-      "X2D direct printing is not supported through legacy MQTT/FTPS. Use the native eMMC route via print_3mf (macOS, or Linux with the native helper installed). " +
+      "X2D direct printing is not supported through legacy MQTT/FTPS. Use the native route via print_3mf with a compatible Bambu plug-in and helper. " +
       "X2D status and slicing remain available on all supported platforms."
     );
   }

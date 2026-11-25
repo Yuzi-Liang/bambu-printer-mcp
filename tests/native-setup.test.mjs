@@ -218,7 +218,28 @@ test("the Linux native home directory follows BAMBU_NATIVE_HOME, XDG_CONFIG_HOME
   assert.equal(isBambuNativePlatform("linux", "x64"), true);
   assert.equal(isBambuNativePlatform("linux", "arm64"), false, "Bambu publishes no arm64 Linux plug-in");
   assert.equal(isBambuNativePlatform("darwin", "arm64"), true);
-  assert.equal(isBambuNativePlatform("win32", "x64"), false);
+  assert.equal(isBambuNativePlatform("win32", "x64"), true);
+  assert.equal(isBambuNativePlatform("win32", "arm64"), false);
+});
+
+test("Windows native transport rejects other models and unpinned plug-ins", {
+  skip: process.platform !== "win32" || process.arch !== "x64",
+}, t => {
+  const directory = tempDir(t, "bambu-native-windows-");
+  const plugin = path.join(directory, "bambu_networking.dll");
+  fs.writeFileSync(plugin, "UNVERIFIED PLUG-IN");
+  const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
+    import assert from "node:assert/strict";
+    import { assertBambuNativeAvailable } from "./dist/bambu-native.js";
+    assert.throws(() => assertBambuNativeAvailable("x1c"), /supports X2D only/);
+    assert.throws(() => assertBambuNativeAvailable("x2d"), /does not match the verified Windows Bambu plug-in/);
+  `], {
+    cwd: ROOT,
+    encoding: "utf8",
+    env: { ...process.env, BAMBU_NATIVE_HELPER: process.execPath, BAMBU_NATIVE_PLUGIN: plugin,
+      BAMBU_NATIVE_CONFIG_DIR: directory, BAMBU_NATIVE_CERT_DIR: directory, BAMBU_NATIVE_ALLOW_UNPINNED_PLUGIN: "1" },
+  });
+  assert.equal(child.status, 0, child.stderr || child.error?.message);
 });
 
 test("compiled Linux helper resolves plug-in, certificate and config defaults", { skip: !canCompile && "requires Linux and a C++ compiler" }, async t => {

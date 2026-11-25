@@ -10,6 +10,7 @@ export function runCadProcess(file, args, options) {
             cwd: options.cwd,
             stdio: ["ignore", "pipe", "pipe"],
             detached: process.platform !== "win32",
+            windowsHide: true,
         });
         let stdout = "", stderr = "", failure;
         const kill = () => {
@@ -44,7 +45,8 @@ export function runCadProcess(file, args, options) {
         child.once("close", (code) => {
             clearTimeout(timer);
             options.signal?.removeEventListener("abort", abort);
-            kill();
+            if (process.platform !== "win32")
+                kill();
             if (failure)
                 reject(failure);
             else if (code !== 0)

@@ -65,7 +65,7 @@ test("CAD confinement has no network or home mounts and refuses unsupported host
   assert.ok(linux.args.indexOf("--remount-ro") > linux.args.lastIndexOf("--bind"));
   assert.ok(linux.args.includes("--die-with-parent"));
   assert.equal(linux.args.includes("/home"), false);
-  await assert.rejects(cadSandbox("win32", roots), /confinement.*unavailable/i);
+  await assert.rejects(cadSandbox("freebsd", roots), /confinement.*unavailable/i);
 });
 
 test("CAD run refuses outputs outside configured roots and symlink escapes before execution", async (t) => {

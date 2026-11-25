@@ -5,6 +5,8 @@
 ### Added
 
 - Add an optional Windows stdio server with a read-only `list_account_print_history` tool. It queries the account signed into Bambu Studio through the installed Bambu networking plug-in and returns a page of past print tasks.
+- Add a Windows x64 build of the X2D native LAN helper. It uses the checked `bambu_native` route with the pinned Bambu Studio 2.9.2 networking plug-in and retains print preflight and final dispatch authorization.
+- Run the pinned build123d CAD engine on Windows x64 with an AppContainer, a bounded Job Object and isolated per-operation input and output staging.
 
 ## [1.1.102] – 2026-11-23
 

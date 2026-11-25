@@ -6,7 +6,6 @@ import errno
 import json
 import math
 import os
-import resource
 import sys
 from pathlib import Path
 
@@ -70,6 +69,10 @@ def scan_loader(inputs):
 
 
 def limits():
+    # Windows sets its limits on the Job Object before it resumes this process.
+    if sys.platform == 'win32':
+        return
+    import resource
     caps = [(resource.RLIMIT_FSIZE, 128 * 1024**2), (resource.RLIMIT_CPU, 900),
             (resource.RLIMIT_NOFILE, 128)]
     if sys.platform != 'darwin': caps.append((resource.RLIMIT_AS, 8 * 1024**3))
@@ -80,6 +83,16 @@ def limits():
 
 
 def main():
+    if sys.platform == 'win32' and sys.flags.no_site:
+        import site
+        # The venv's executable redirects through a second process on Windows.
+        # The single-process job runs the managed interpreter and only this private site directory.
+        home = Path.cwd()
+        tmp = home / 'tmp'
+        tmp.mkdir(exist_ok=True)
+        os.environ.update(USERPROFILE=str(home), TEMP=str(tmp), TMP=str(tmp),
+                          XDG_CACHE_HOME=str(tmp / 'cache'), XDG_CONFIG_HOME=str(tmp / 'config'))
+        site.addsitedir(os.environ['CAD_WINDOWS_SITE_PACKAGES'])
     mode = sys.argv[1]
     if mode == 'imports':
         import build123d
@@ -89,9 +102,10 @@ def main():
         from PIL import Image
         print(json.dumps({'build123d': build123d.__version__}))
         return
-    request = json.loads(Path(sys.argv[2]).read_text())
+    request = json.loads(Path(sys.argv[2]).read_text(encoding='utf-8'))
     if mode == 'parameters':
-        _, _, merged = parameters(Path(request['script']).read_text(), json.loads(Path(request['parameters']).read_text()))
+        _, _, merged = parameters(Path(request['script']).read_text(encoding='utf-8'),
+                                  json.loads(Path(request['parameters']).read_text(encoding='utf-8')))
         print(json.dumps(merged, allow_nan=False))
         return
     limits()
@@ -99,8 +113,8 @@ def main():
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     if mode == 'build':
         import build123d as cad
-        source = Path(request['script']).read_text()
-        tree, declaration, merged = parameters(source, json.loads(Path(request['parameters']).read_text()))
+        source = Path(request['script']).read_text(encoding='utf-8')
+        tree, declaration, merged = parameters(source, json.loads(Path(request['parameters']).read_text(encoding='utf-8')))
         declaration.value = ast.Name(id='__cad_parameters__', ctx=ast.Load())
         ast.fix_missing_locations(tree)
         from scan_touchup import scan_touchup_factory
@@ -164,16 +178,37 @@ def main():
                 if e.errno != errno.EROFS: raise
             else:
                 raise RuntimeError('CAD confinement did not reject ' + operation)
-        sock = socket.socket()
-        sock.settimeout(1)
+        if sys.platform == 'win32':
+            import subprocess
+            try:
+                Path(request['windows_private_proof']).read_bytes()
+            except PermissionError:
+                pass
+            else:
+                raise RuntimeError('CAD confinement did not reject reading a private file')
+            for protected in (Path(sys.argv[2]), Path(__file__)):
+                try:
+                    with protected.open('ab'):
+                        pass
+                except PermissionError:
+                    pass
+                else:
+                    raise RuntimeError('CAD confinement did not protect read-only files')
+            try:
+                subprocess.run([sys.executable, '-I', '-c', 'pass'], timeout=3, check=True)
+            except OSError as e:
+                # The Job Object's one-process quota produces ERROR_NOT_ENOUGH_QUOTA.
+                if getattr(e, 'winerror', None) not in (5, 1816): raise
+            else:
+                raise RuntimeError('CAD confinement did not reject a child process')
         try:
-            sock.connect(('192.0.2.1', 443))
+            with socket.socket() as sock:
+                sock.settimeout(1)
+                sock.connect(('192.0.2.1', 443))
         except OSError:
             pass
         else:
             raise RuntimeError('CAD confinement did not reject network access')
-        finally:
-            sock.close()
         print(json.dumps({'build123d': cad.__version__, **result['checks'], 'solid_count': result['solid_count']}))
     else:
         raise ValueError('Unknown CAD operation')

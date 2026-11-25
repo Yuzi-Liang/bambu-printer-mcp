@@ -145,15 +145,17 @@ test("cad_run edits a designer's 3MF and makes a new two-plate project (real CAD
   skip: !data && "set CAD_E2E_DATA_DIR to an installed, verified CAD runtime", timeout: 600000,
 }, async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cad-project-real-"));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  fs.copyFileSync(KIT, path.join(dir, "kit.3mf"));
   const client = new Client({ name: "cad-project-test", version: "1" });
+  t.after(async () => {
+    try { await client.close(); }
+    finally { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 }); }
+  });
+  fs.copyFileSync(KIT, path.join(dir, "kit.3mf"));
   const transport = new StdioClientTransport({
     command: process.execPath, args: [fileURLToPath(new URL("../dist/index.js", import.meta.url))], cwd: dir, stderr: "pipe",
     env: { PATH: process.env.PATH, HOME: process.env.HOME, MCP_TRANSPORT: "stdio", BAMBU_MODEL: "", BAMBU_PRINTER_HOST: "127.0.0.1", TEMP_DIR: dir, CAD_DATA_DIR: data },
   });
   transport.stderr?.on("data", () => {});
-  t.after(() => client.close());
   await client.connect(transport);
   const call = async (name, args) => {
     const result = await client.callTool({ name, arguments: args }, undefined, { timeout: 300000 });

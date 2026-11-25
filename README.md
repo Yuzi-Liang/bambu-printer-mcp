@@ -53,7 +53,7 @@ an existing slicer before suggesting an install. For FULU/Orca CLI auto-slicing,
 require MCP 1.1.11+ and its matching installed profile tree (see guide).
 A slicer is not needed here to print a pre-sliced file. Configure the optional FULU
 BambuNetwork bridge only if I choose it, and explain its runtime/auth needs.
-X2D supports status and slicing; native printing requires macOS or x86-64 Linux and a locally built helper.
+X2D supports status and slicing. Native LAN printing is available with a locally built helper on macOS, x86-64 Linux, and [x86-64 Windows](#x2d-native-transport-windows).
 
 If this harness does not already provide code mode or an equivalent, suggest
 a compatible code-mode integration as an optional addition. It is not required;
@@ -200,7 +200,7 @@ The optional FULU **BambuNetwork bridge** exposes `bambu_network_bridge_status`,
 - Capture a JPEG snapshot from the chamber camera. Supports A1, A1 mini, P1S, P1P (TCP-on-6000), and X1, X1C, X1E, P2S, H2, H2S, H2D, H2C, H2D Pro, X2D (RTSP via ffmpeg). Requires ffmpeg in PATH for the RTSP path.
 - Upload and print pre-sliced `.3mf` projects with checked plate selection and calibration flags. Legacy `.gcode.3mf` routes require a single external-spool-only plate; see the [slicing guide](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/SLICING.md).
 - Slice through BambuStudio CLI with automatic BBL inheritance/include resolution, per-slot filament colours, and fallback prime-tower placement for multi-nozzle printers. Missing dependencies stop the slice; custom settings and saved project tower positions are preserved. Multi-colour slicing is verified by the contributor on BambuStudio 02.08.02.60 for Windows; older CLI versions have separate limitations. See [slicing guide](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/SLICING.md).
-- Recognize X2D status and slice with its own installed BambuStudio preset (`BAMBU_MODEL=x2d`). On macOS and x86-64 Linux, `print_3mf` selects the native route after resolving the model, including an elicited model. Install the optional helper as described below; Windows native print requests, and Linux requests without the helper, fail before slicing or contacting the printer. Legacy FTPS and remote G-code starts remain unsupported for X2D.
+- Recognize X2D status and slice with its own installed BambuStudio preset (`BAMBU_MODEL=x2d`). On macOS, x86-64 Linux, and x86-64 Windows, `print_3mf` selects the native route after resolving the model, including an elicited model. Install the optional helper as described below. Requests without a compatible helper fail before slicing or contacting the printer. Legacy FTPS and remote G-code starts remain unsupported for X2D.
 - Parse AMS mapping from the 3MF's embedded slicer metadata (`Metadata/plate_<n>.json` + gcode filament header) and send it correctly formatted per the OpenBambuAPI spec, with correct H2S/H2D/H2C `ams_mapping2` parallel array format
 - **Auto-match AMS slots by RFID** (`auto_match_ams` flag on `print_3mf`). Resolves required `tray_info_idx` from the sliced 3MF against live AMS inventory. Handles same-SKU different-color filaments by matching on `(tray_info_idx, tray_color)` and tracking already-claimed slots. Dry-run with `resolve_3mf_ams_slots` before printing.
 - Cancel, pause, and resume in-progress print jobs via MQTT
@@ -1027,7 +1027,7 @@ Call an allowed read-only probe such as `{"method": "net.is_user_login", "payloa
 
 #### X2D native transport (macOS)
 
-Install Bambu Studio and its networking plug-in, plus the Apple command-line developer tools (`clang++`). The plug-in is loaded at runtime and is not redistributed. In the installed `bambu-printer-mcp` package directory, run `npm run build:native`. For a global install, locate that directory with `npm root -g`; for an extracted desktop extension, run the same command in the extension directory. Rebuild after updating the package. For Linux, see [X2D native transport (Linux)](#x2d-native-transport-linux); Windows can use status and slicing only.
+Install Bambu Studio and its networking plug-in, plus the Apple command-line developer tools (`clang++`). The plug-in is loaded at runtime and is not redistributed. In the installed `bambu-printer-mcp` package directory, run `npm run build:native`. For a global install, locate that directory with `npm root -g`; for an extracted desktop extension, run the same command in the extension directory. Rebuild after updating the package. See also [X2D native transport (Linux)](#x2d-native-transport-linux) and [X2D native transport (Windows)](#x2d-native-transport-windows).
 
 The npm package and desktop bundle include `native/bambu-native-print.cpp`, `scripts/build-bambu-native.sh` and the Linux setup script, never a developer's compiled binary. The server finds the built helper relative to its installed package, regardless of the launch directory. A trusted server setting `BAMBU_NATIVE_HELPER` can select an alternate executable.
 
@@ -1050,6 +1050,19 @@ Use the same package version as the server, for example `bambu-printer-mcp@1.2.3
 `--check-update` asks Bambu's plug-in service for the newest Linux plug-in and compares the `PrintParams` layout in the matching Bambu Studio header with the helper. It reports only: the setup never installs an unpinned plug-in, because a changed layout would send wrong print parameters. A pin is raised by a package release after the check passes and the offered archive and required libraries are checksum-verified. Offline plug-in loading and physical X2D printing are separate validation steps, reported with each release.
 
 Once the helper, plug-in and certificates are installed, X2D printing, upload and controls use the same routing, safety checks and authorization handshake described for macOS above. On Linux, stop and heater-off go out over the native route and MQTT at the same time, so a stuck helper cannot delay them. MQTT is sent again once every older print or heating helper for that printer has exited and the immediate MQTT attempt has settled, so none can dispatch after it; either the native route or that later MQTT send succeeding counts, and the result lists all sends under `routes`. Each MQTT send gives up after 15 seconds (`BAMBU_EMERGENCY_MQTT_TIMEOUT_MS`), so an unreachable MQTT connection cannot hold back a stop the native route already sent. A connection completing after that deadline cannot dispatch its expired command; an already queued MQTT publish is discarded by force-closing and invalidating that client. A repeated stop or heater-off is harmless. macOS keeps its native-only route. On both systems a print goes to the printer's SD card or USB stick when the printer reports one ready, so it can be reprinted from the printer and archived by tools that read the card; otherwise it goes to internal storage (eMMC), as Bambu Studio's Print button always does. `BAMBU_NATIVE_TRY_EMMC_PRINT=1` (or `0`) forces the choice. The server accepts only the pinned plug-in checksums; `BAMBU_NATIVE_ALLOW_UNPINNED_PLUGIN=1` is a trusted override for testing another build at your own risk. Without a complete installation, Linux keeps its previous behavior: X2D status and slicing work, stop, pause and heater-off use MQTT, and native print requests name the setup command before contacting the printer. Bambu publishes the Linux plug-in for x86-64 only; other architectures keep the MQTT behavior.
+
+#### X2D native transport (Windows)
+
+Install x64 Bambu Studio 2.9.2 with its networking plug-in (02.09.02.50), CMake, and the Visual Studio 2022 C++ build tools. From the MCP package or checkout, build the Windows x64 helper in PowerShell:
+
+```powershell
+cmake -S native -B temp/windows-native -G 'Visual Studio 17 2022' -A x64
+cmake --build temp/windows-native --config Release --target bambu-native-print
+```
+
+Configure `BAMBU_MODEL=x2d` and the usual LAN IP, serial and access code. The server finds the build at `temp/windows-native/Release/bambu-native-print.exe`, or accepts an absolute executable path in `BAMBU_NATIVE_HELPER`. It checks the SHA-256 of both `bambu_networking.dll` and `BambuSource.dll` in `%APPDATA%\BambuStudio\plugins`. Set `BAMBU_NATIVE_PLUGIN` to the absolute networking DLL path for a different installation location. Set `BAMBU_NATIVE_CERT_DIR` to Studio's `resources\cert` directory if `SLICER_PATH` points elsewhere. The helper stores its configuration and logs in `%LOCALAPPDATA%\bambu-printer-mcp\bambu-native` by default.
+
+The Windows route uses the same file, AMS, live-state and final dispatch checks. On Windows, stop and heater-off can also use the bounded MQTT route described above. Read-only connection probes verify MQTT and the file tunnel. Actual file transfer, print start and task controls require separate hardware validation.
 
 #### x2d_native_control
 
@@ -1312,7 +1325,7 @@ These defaults reduce stale-profile problems; inspect downloaded models and thei
 
 ### Code-CAD
 
-This MCP includes an optional headless design engine built on **build123d**, with trimesh and Manifold for mesh checks. It supports dimensioned parts and script-based captured-mesh work, saving editable Python, named dimensions, STL, and STEP for solid designs without starting Blender or Fusion. Nothing is downloaded until you explicitly call `cad_setup` with `install: true`. Allow about **1.5 GiB** for its isolated Python, packages and download cache; the exact size varies by platform. It needs `uv`, plus macOS Seatbelt or Linux `bubblewrap`; it refuses to run without confinement.
+This MCP includes an optional headless design engine built on **build123d**, with trimesh and Manifold for mesh checks. It supports dimensioned parts and script-based captured-mesh work, saving editable Python, named dimensions, STL, and STEP for solid designs without starting Blender or Fusion. Nothing is downloaded until you explicitly call `cad_setup` with `install: true`. Allow about **1.5 GiB** for its isolated Python, packages and download cache. It needs `uv` and OS confinement through macOS Seatbelt, Linux `bubblewrap`, or the [Windows x64 AppContainer helper](docs/CAD.md#windows-setup).
 
 Why include it: a local comparison made a bottle-holder cavity at 65.800 × 28.800 mm, changed its height by exactly 1 mm with one parameter edit in 137 seconds, and exported an articulated unicorn in 657 seconds where two recorded Blender attempts reached 901 seconds without a model. Initial holder worker passes took 238–893 seconds; this is not a speed guarantee. The unicorn still had dimension and pose errors. These few runs do not establish general superiority, reliable articulation or physical print fit. Both holders collided with an oversized raw scan; numerical checks exposed that rather than silently resizing it.
 

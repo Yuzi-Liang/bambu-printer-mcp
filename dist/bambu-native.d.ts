@@ -58,7 +58,7 @@ export type BambuNativeTemperatureCommand = {
 };
 /**
  * Hosts for which the native helper and Bambu's networking plug-in exist.
- * Bambu publishes its Linux plug-in for x86-64 only.
+ * The checked Windows and Linux builds use x86-64 binaries.
  */
 export declare function isBambuNativePlatform(platform?: NodeJS.Platform, arch?: string): boolean;
 /**
@@ -98,10 +98,10 @@ export declare function sha256File(file: string): string;
  * accepts, and its own install directory when that is not the default.
  */
 export declare function bambuNativeSetupCommand(version?: string, env?: NodeJS.ProcessEnv): string;
-export declare function assertBambuNativeAvailable(): void;
+export declare function assertBambuNativeAvailable(model?: string): void;
 /**
  * True when X2D controls should use the native route. macOS keeps its
- * unconditional routing. Linux opts in only with a complete installation, so
+ * unconditional routing. Linux and Windows opt in only with a complete installation, so
  * stop, pause and heater-off keep their MQTT route otherwise.
  */
 export declare function bambuNativeControlsAvailable(): boolean;

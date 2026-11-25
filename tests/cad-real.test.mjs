@@ -20,8 +20,11 @@ test(
   },
   async (t) => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cad-real-"));
-    t.after(() => fs.rm(dir, { recursive: true, force: true }));
     const c = new Client({ name: "cad-real-test", version: "1" });
+    t.after(async () => {
+      try { await c.close(); }
+      finally { await fs.rm(dir, { recursive: true, force: true, maxRetries: 3 }); }
+    });
     const tr = new StdioClientTransport({
       command: process.execPath,
       args: [entry],
@@ -39,7 +42,6 @@ test(
       stderr: "pipe",
     });
     tr.stderr?.on("data", () => {});
-    t.after(() => c.close());
     await c.connect(tr);
     await c.listTools();
     const call = async (name, args) => {

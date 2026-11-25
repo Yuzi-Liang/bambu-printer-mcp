@@ -37,6 +37,7 @@
     "CONTRIBUTORS.md",
     "LICENSE",
     "native/*.cpp",
+    "native/CMakeLists.txt",
     "native/*.h",
     "scripts/build-bambu-native.sh",
     "scripts/setup-bambu-native.mjs"

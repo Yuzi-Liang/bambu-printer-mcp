@@ -23,7 +23,7 @@ async function fixture(t) {
           });
           await fs.writeFile(
             path.join(root, "data/runtime/bin/python"),
-            "stub",
+            Buffer.alloc(8192, 0x2a),
           );
         }
         if (args.includes("smoke"))

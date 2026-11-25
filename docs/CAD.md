@@ -14,11 +14,23 @@ To remove a downloaded runtime, first stop MCP instances using it, then move its
 
 - macOS: `~/Library/Application Support/bambu-printer-mcp/cad`.
 - Linux: `${XDG_DATA_HOME:-~/.local/share}/bambu-printer-mcp/cad`.
+- Windows x64: `%LOCALAPPDATA%\bambu-printer-mcp\cad`.
 - A custom **`CAD_DATA_DIR`** replaces that location; remove that folder instead.
 
 This folder contains the private Python environment, managed interpreter, package cache and setup/fit working files. Saved designs are under the `output_dir` chosen for `cad_run`, so removing the environment leaves those outputs alone. Keep input snapshots with a saved input-dependent design. Re-enable by removing `CAD_ENABLED=0`, restarting the MCP and running setup again when you want it.
 
-Allow about **1.5 GiB**, including the download cache; platform wheels and cache state affect the exact size. Set `CAD_DATA_DIR` to a different private folder **before** setup if needed. On macOS it must be on an internal disk with file ownership enabled; USB/external and network volumes are refused. If internal space is tight, leave this engine disabled. Cache and temporary installer files stay under that data folder, not the system temporary directory. `uv` must already be on the MCP's PATH. Setup downloads a managed Python 3.12 and only binary wheels from the complete pins shipped in `src/cad/requirements.lock`; it never uses the system/site Python environment or passes printer/provider credentials to subprocesses.
+Allow about **1.5 GiB**, including the download cache; platform wheels and cache state affect the exact size. Set `CAD_DATA_DIR` to a different private folder **before** setup if needed. On macOS it must be on an internal disk with file ownership enabled; USB/external and network volumes are refused. If internal space is tight, leave this engine disabled. Cache and temporary installer files stay under that data folder, not the system temporary directory. Install `uv` and put it on the MCP's PATH or set `CAD_UV_PATH` to its executable. Setup downloads a managed Python 3.12 and only binary wheels from the complete pins shipped in `src/cad/requirements.lock`; it never uses the system/site Python environment or passes printer/provider credentials to subprocesses.
+
+### Windows setup
+
+Use Windows 10 or 11 x64, a local NTFS CAD data folder, `uv`, CMake, and the Visual Studio 2022 C++ build tools. Build the sandbox helper from the MCP package or checkout in PowerShell:
+
+```powershell
+cmake -S native -B temp/windows-native -G 'Visual Studio 17 2022' -A x64
+cmake --build temp/windows-native --config Release --target bambu-cad-sandbox
+```
+
+The MCP finds `temp/windows-native/Release/bambu-cad-sandbox.exe` or honors an absolute path in `CAD_WINDOWS_HELPER`. Run `cad_setup` with `install: true`. For persistent files, use `CAD_OUTPUT_DIRS` or a persistent `TEMP_DIR` and pass an existing `output_dir`. Windows paths are used throughout the CAD, slicing and X2D native LAN workflow.
 
 ## Readiness and isolation
 
@@ -28,13 +40,14 @@ Allow about **1.5 GiB**, including the download cache; platform wheels and cache
 
 - **macOS:** Seatbelt (`sandbox-exec`) denies network, Apple events, Mach service lookup, other-process inspection/environment reads, signals, hard links and process forking. Personal home, volume and temporary data (including macOS Data-volume aliases) are unreadable except the private environment, bundled helpers, this job and explicit input snapshots. Public OS runtime files remain readable. Only the job folder is writable; source, parameters, request and input snapshots are protected read-only.
 - **Linux:** `bubblewrap` (`bwrap`) creates fresh user, mount, PID and network namespaces with an empty filesystem, read-only system/runtime mounts, only the job writable, and protected checkpoints/input mounts. Install bubblewrap with your distribution's package manager. If user namespaces or bubblewrap are missing/blocked, setup/run fails closed; it never retries unconfined. Network namespace isolation prevents reaching the host/network; it is not a general seccomp syscall filter.
-- Other platforms fail closed. No Windows confinement is implemented.
+- **Windows x64:** each worker runs in a fresh AppContainer with no capabilities and a one-process Job Object. It reads staged copies of the request, declared inputs and checkpoints. The server publishes checked regular files from a separate writable directory. The interpreter, installed packages and worker helpers are read-only. Cancellation closes the job and terminates its worker. Setup probes private-file access, checkpoint writes, child-process creation and network access before recording readiness. See [Microsoft's AppContainer documentation](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer).
+- Unsupported platforms fail closed.
 
-Subprocesses have wall deadlines, bounded diagnostics, inherited-hard-limit-aware CPU/file/descriptor caps (plus an address-space cap on Linux; macOS does not support the finite data-memory limit used on other hosts), and cancellation kills their dispatched process group. CAD code is not allowed to spawn other applications on macOS; Linux descendants stay in the PID namespace. An engine-valid model is not a print-safety approval: printer operations retain their existing gates.
+Subprocesses have wall deadlines and bounded diagnostics. Unix workers have CPU, file and descriptor caps, plus a Linux address-space cap. Windows applies CPU, committed memory, process-count and work-output limits through the launcher. Printer operations retain their independent safety checks.
 
 ## Output and input paths
 
-By default CAD outputs and selected inputs must be under this MCP instance's `TEMP_DIR`, the root already used for generated STL files. Additional roots are trusted configuration **`CAD_OUTPUT_DIRS`**, separated by `:` on macOS/Linux. Calls cannot add roots or executables. Paths are canonicalized; a symlink that leaves the roots is refused. The caller supplies an existing output directory, and each run creates a private unique child folder there. Repeating a call never overwrites an earlier output. The automatically created default `TEMP_DIR` is temporary and is deleted when the MCP exits. For checkpoints and renders that must survive an MCP restart, configure a persistent `TEMP_DIR` or `CAD_OUTPUT_DIRS` and choose an `output_dir` there. A configured `TEMP_DIR` is retained. This follows the existing STL storage policy; the environment and saved designs have separate lifetimes.
+By default CAD outputs and selected inputs must be under this MCP instance's `TEMP_DIR`, the root already used for generated STL files. Additional roots are trusted configuration **`CAD_OUTPUT_DIRS`**, separated by `;` on Windows and `:` on macOS/Linux. Calls cannot add roots or executables. Paths are canonicalized; a symlink that leaves the roots is refused. The caller supplies an existing output directory, and each run creates a private unique child folder there. Repeating a call never overwrites an earlier output. The automatically created default `TEMP_DIR` is temporary and is deleted when the MCP exits. For checkpoints and renders that must survive an MCP restart, configure a persistent `TEMP_DIR` or `CAD_OUTPUT_DIRS` and choose an `output_dir` there. A configured `TEMP_DIR` is retained. This follows the existing STL storage policy; the environment and saved designs have separate lifetimes.
 
 Inputs are an explicit array of `{name, path}` entries with up to 16 local regular files, at most 64 MiB each / 256 MiB total. The MCP snapshots them into the job's read-only `inputs/` folder. Scripts use `INPUTS["alias"]`; original user files and unrelated home files are not exposed. A path allowed by this MCP may still be refused by a remote client's narrower path policy.
 

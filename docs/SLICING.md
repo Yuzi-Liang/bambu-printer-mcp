@@ -31,7 +31,7 @@ These preflight changes have automated regression coverage with intercepted prin
 | Single-colour BambuStudio CLI slicing | MCP slices via CLI with automatic BBL profile resolution | ✅ Works (verified H2S, H2D, X1C, P1S on 02.06.01.55). H2C requires Bambu Studio 2.4.0+ and `BAMBU_MODEL=h2c`. |
 | FULU/Orca CLI preparation (1.1.11+) | Same exact-machine gate and BBL dependency resolution | Regression-tested preparation and failure handling; live slicer/version validation remains separate. |
 | Multi-color BambuStudio CLI slicing | MCP prepares every filament slot's colour and a fallback tower position | Contributor-verified on Windows BambuStudio 02.08.02.60, including four-colour X2D slicing. See version limits below. |
-| X2D status and slicing | `BAMBU_MODEL=x2d` with an installed X2D preset | Available. Native printing additionally requires macOS or x86-64 Linux and the optional helper; legacy FTPS remains unsupported. |
+| X2D status and slicing | `BAMBU_MODEL=x2d` with an installed X2D preset | Available. Native LAN printing uses the optional helper on macOS, x86-64 Linux, or [x86-64 Windows](../README.md#x2d-native-transport-windows). Legacy FTPS remains unsupported. |
 | Pre-sliced `.gcode.3mf` → printer | MCP `print_3mf` | ✅ Works (verified live on Kingpin H2D) |
 | Other slicing combinations | Pre-slice in the GUI, then use `print_3mf` for a supported printer | Inspect the preview and use the printer's supported transport. |
 

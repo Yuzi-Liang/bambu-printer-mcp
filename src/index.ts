@@ -2109,9 +2109,9 @@ class BambuPrinterMCPServer {
     args: Record<string, any>, host: string, bambuSerial: string, bambuToken: string,
     onUpdate?: BambuNativeUpdateCallback, signal?: AbortSignal
   ): Promise<Record<string, unknown>> {
-    assertBambuNativeAvailable();
     const model = await this.resolveBambuModel(args.bambu_model);
     if (!NATIVE_ROUTE_MODELS.has(model)) throw new Error(NATIVE_ROUTE_RESTRICTION);
+    assertBambuNativeAvailable(model);
     return this.print3mfViaBambuNetwork(
       { ...args, bambu_model: model, connection_type: "lan", bambu_network_method: "start_local_print" },
       host, bambuSerial, bambuToken, { onUpdate, signal }
@@ -2127,7 +2127,7 @@ class BambuPrinterMCPServer {
     // request for another model is never told to install the native helper.
     const model = await this.resolveBambuModel(args.bambu_model);
     if (!NATIVE_ROUTE_MODELS.has(model)) throw new Error(NATIVE_ROUTE_RESTRICTION);
-    assertBambuNativeAvailable();
+    assertBambuNativeAvailable(model);
     const unsupported = ["use_ams", "ams_mapping", "ams_mapping2", "ams_mapping_info", "nozzle_mapping", "nozzles_info",
       "bed_leveling", "flow_calibration", "vibration_calibration", "layer_inspect", "timelapse"];
     for (const key of unsupported) {
@@ -3264,7 +3264,7 @@ class BambuPrinterMCPServer {
           },
           {
             name: "reread_ams_rfid",
-            description: "Trigger a Bambu AMS RFID re-read for one AMS slot. X2D on macOS, or Linux with the native helper installed, uses the native official plug-in route. This can move AMS filament; use only when the printer is idle and unloaded.",
+            description: "Trigger a Bambu AMS RFID re-read for one AMS slot. A configured X2D native helper uses the official plug-in route. This can move AMS filament; use only when the printer is idle and unloaded.",
             inputSchema: {
               type: "object",
               properties: {
@@ -3297,7 +3297,7 @@ class BambuPrinterMCPServer {
           },
           {
             name: "set_fan_speed",
-            description: "Set a Bambu printer fan speed percentage. X2D on macOS, or Linux with the native helper installed, uses Bambu's networking plug-in without UI automation; other models use MQTT.",
+            description: "Set a Bambu printer fan speed percentage. A configured X2D native helper uses Bambu's networking plug-in; other models use MQTT.",
             inputSchema: {
               type: "object",
               properties: {
@@ -3356,7 +3356,7 @@ class BambuPrinterMCPServer {
           },
           {
             name: "set_ams_drying",
-            description: "Start or stop the AMS filament drying cycle. X2D on macOS, or Linux with the native helper installed, uses the native official plug-in route and supports AMS-HT id 128.",
+            description: "Start or stop the AMS filament drying cycle. A configured X2D native helper uses the official plug-in route and supports AMS-HT id 128.",
             inputSchema: {
               type: "object",
               properties: {
@@ -3871,15 +3871,15 @@ class BambuPrinterMCPServer {
       const bambuToken = String(args?.bambu_token || DEFAULT_BAMBU_TOKEN);
       const x2dTarget = bambuSerial.trim().toUpperCase().startsWith("20P") ||
         (DEFAULT_BAMBU_MODEL === "x2d" && bambuSerial === DEFAULT_BAMBU_SERIAL);
-      // Resolved lazily: the Linux availability check reads files, and most
+      // Resolved lazily: the native availability check reads files, and most
       // tools (status, slicing, STL) never need it.
       // One resolution per request; null means native X2D controls are usable.
       let nativeUnavailable: string | null | undefined;
       const nativeUnavailableReason = () =>
         (nativeUnavailable ??= x2dTarget ? bambuNativeUnavailableReason() ?? null : "The selected printer is not an X2D.");
       const nativeControls = () => nativeUnavailableReason() === null;
-      // Linux sent X2D stop and heater-off over MQTT before the native route
-      // existed. Send them over both routes there: a stuck helper must not
+      // Send X2D stop and heater-off over both routes on Linux and Windows.
+      // A stuck helper must not
       // delay an emergency control, and a repeated stop or heater-off is
       // harmless. The immediate MQTT send can precede the exit of an older
       // print or heating helper that then still dispatches, so MQTT is sent
@@ -3897,12 +3897,17 @@ class BambuPrinterMCPServer {
         const route = resolveConnection(args);
         if (route.mode !== "bambu_network" && nativeControls()) {
           return command === "stop"
-            ? linuxEmergency(() => nativeCommand(), signal => this.bambu.sendStopOverMqtt(host, bambuSerial, bambuToken, signal))
+            ? nativeEmergency(() => nativeCommand(), signal => this.bambu.sendStopOverMqtt(host, bambuSerial, bambuToken, signal))
             : nativeCommand;
         }
         // Native controls are X2D-only. Another model printed natively (X1C)
         // is stopped, paused and resumed over direct MQTT, as its default route is.
-        if (route.mode === "bambu_native" && x2dTarget) throw new Error(nativeUnavailableReason()!);
+        if (route.mode === "bambu_native" && x2dTarget) {
+          if (process.platform === "win32" && command === "stop") {
+            return () => withEmergencyMqttTimeout(signal => this.bambu.sendStopOverMqtt(host, bambuSerial, bambuToken, signal));
+          }
+          throw new Error(nativeUnavailableReason()!);
+        }
         if (route.mode !== "bambu_network") return undefined;
         return (assertActive?: () => void, beforeDispatch?: () => Promise<void>) => {
           const options = { assertDispatchAllowed: () => { extra.signal.throwIfAborted(); assertActive?.(); } };
@@ -3911,8 +3916,8 @@ class BambuPrinterMCPServer {
             : this.bambuNetwork.sendLocalPrintCommand({ devId: bambuSerial, devIp: host, username: "bblp", password: bambuToken, useSsl: true }, command, options, beforeDispatch);
         };
       };
-      const linuxEmergency = (native: () => Promise<any>, mqtt: (signal: AbortSignal) => Promise<any>) => async () => {
-        if (process.platform !== "linux") return native();
+      const nativeEmergency = (native: () => Promise<any>, mqtt: (signal: AbortSignal) => Promise<any>) => async () => {
+        if (process.platform !== "linux" && process.platform !== "win32") return native();
         // An unreachable printer makes the MQTT connect retry forever; bound each
         // MQTT send so it cannot hold back a stop the native route already sent.
         const immediate = withEmergencyMqttTimeout(mqtt);
@@ -4239,7 +4244,7 @@ class BambuPrinterMCPServer {
               throw new Error("Missing required parameter: message_json");
             }
             if (!nativeControls()) {
-              throw new Error("x2d_native_control is restricted to a selected X2D printer on macOS, or on Linux with the native helper installed. " +
+              throw new Error("x2d_native_control requires a selected X2D printer and the configured native transport. " +
                 nativeUnavailableReason());
             }
             const messageJson = validateBambuNativeMetadata(String(args.message_json));
@@ -4374,7 +4379,7 @@ class BambuPrinterMCPServer {
                     const native = () => sendNativeCommand({ host, serial: bambuSerial, token: bambuToken,
                       messageJson: buildBambuNativeTemperatureCommand(heater, target).messageJson }, { signal: extra.signal, assertActive, beforeDispatch });
                     return target === 0
-                      ? linuxEmergency(native, signal => this.bambu.sendHeaterOffOverMqtt(host, bambuSerial, bambuToken, heater, signal))()
+                      ? nativeEmergency(native, signal => this.bambu.sendHeaterOffOverMqtt(host, bambuSerial, bambuToken, heater, signal))()
                       : native();
                   }
                 : undefined
